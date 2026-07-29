@@ -42,6 +42,12 @@ export async function startMcpServer(engine: BrainEngine) {
     // `gbrain call <op>` (sets remote=false in src/cli.ts).
     return dispatchToolCall(engine, name, params, {
       remote: true,
+      // #2430: stdio is a trusted-local pipe with no per-token auth. Mark it so
+      // whoami returns {transport:'local'} instead of unknown_transport, WITHOUT
+      // flipping remote (which keeps file_upload confinement + takes allow-list
+      // tight). HTTP transports never set this, so their fail-closed auth
+      // tripwire is preserved.
+      localTransport: true,
       takesHoldersAllowList: ['world'],
       // v0.31: source defaults to 'default' for stdio (no per-token scope).
       // Operators who want a different source on stdio MCP should set

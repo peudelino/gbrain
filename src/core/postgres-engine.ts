@@ -4713,6 +4713,32 @@ export class PostgresEngine implements BrainEngine {
     };
   }
 
+  async getScopedCounts(opts?: { sourceId?: string; sourceIds?: string[] }): Promise<{ page_count: number; chunk_count: number }> {
+    const sql = this.sql;
+    // #2430: source-scoped counters for the read-scope brain-identity banner.
+    // Precedence mirrors sourceScopeOpts (federated array > scalar > unscoped).
+    // chunk_count joins content_chunks → pages because chunks carry no source_id.
+    const sources = opts?.sourceIds ?? null;
+    const scalar = opts?.sourceId ?? null;
+    const pageScope = sources
+      ? sql` AND source_id = ANY(${sources}::text[])`
+      : scalar
+        ? sql` AND source_id = ${scalar}`
+        : sql``;
+    const chunkScope = sources
+      ? sql` AND p.source_id = ANY(${sources}::text[])`
+      : scalar
+        ? sql` AND p.source_id = ${scalar}`
+        : sql``;
+    const [row] = await sql`
+      SELECT
+        (SELECT count(*) FROM pages WHERE deleted_at IS NULL${pageScope}) AS page_count,
+        (SELECT count(*) FROM content_chunks cc JOIN pages p ON p.id = cc.page_id
+           WHERE p.deleted_at IS NULL${chunkScope}) AS chunk_count
+    `;
+    return { page_count: Number(row.page_count), chunk_count: Number(row.chunk_count) };
+  }
+
   async getHealth(): Promise<BrainHealth> {
     const sql = this.sql;
     // Bug 11 doc-drift fix — orphan_pages means "islanded" (no inbound AND

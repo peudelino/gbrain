@@ -4696,6 +4696,25 @@ export class PGLiteEngine implements BrainEngine {
     };
   }
 
+  async getScopedCounts(opts?: { sourceId?: string; sourceIds?: string[] }): Promise<{ page_count: number; chunk_count: number }> {
+    // #2430: source-scoped counters for the read-scope brain-identity banner
+    // (mirrors postgres-engine). Precedence: federated array > scalar > unscoped.
+    // chunk_count joins content_chunks → pages (chunks carry no source_id).
+    const sources = opts?.sourceIds ?? null;
+    const scalar = opts?.sourceId ?? null;
+    const pageScope = sources ? ` AND source_id = ANY($1::text[])` : scalar ? ` AND source_id = $1` : '';
+    const chunkScope = sources ? ` AND p.source_id = ANY($1::text[])` : scalar ? ` AND p.source_id = $1` : '';
+    const params: unknown[] = sources ? [sources] : scalar ? [scalar] : [];
+    const { rows: [row] } = await this.db.query(`
+      SELECT
+        (SELECT count(*) FROM pages WHERE deleted_at IS NULL${pageScope}) AS page_count,
+        (SELECT count(*) FROM content_chunks cc JOIN pages p ON p.id = cc.page_id
+           WHERE p.deleted_at IS NULL${chunkScope}) AS chunk_count
+    `, params);
+    const r = row as Record<string, unknown>;
+    return { page_count: Number(r.page_count), chunk_count: Number(r.chunk_count) };
+  }
+
   async getHealth(): Promise<BrainHealth> {
     // Combined metrics from master (brain_score components: dead_links, link_count,
     // pages_with_timeline) and v0.10.3 graph layer (link_coverage, timeline_coverage,

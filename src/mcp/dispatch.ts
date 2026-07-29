@@ -70,6 +70,12 @@ export interface DispatchOpts {
    * was replaced by dispatchToolCall.
    */
   auth?: AuthInfo;
+  /**
+   * #2430: mark the trusted-local stdio transport so `whoami` can return the
+   * `{transport: 'local'}` shape without loosening `remote`. Set ONLY by
+   * `src/mcp/server.ts` (stdio); the HTTP transports leave it unset.
+   */
+  localTransport?: boolean;
 }
 
 /**
@@ -210,6 +216,7 @@ export function buildOperationContext(
     // this fallback covers code paths that historically passed undefined.
     sourceId: opts.sourceId ?? 'default',
     auth: opts.auth,
+    localTransport: opts.localTransport,
   };
 }
 

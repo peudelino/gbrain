@@ -391,6 +391,17 @@ export interface OperationContext {
    * satisfied even on single-source brains.
    */
   sourceId: string;
+  /**
+   * #2430: the caller arrived over a trusted-local transport (the stdio MCP
+   * pipe) that legitimately carries no per-token `auth`. Set ONLY by the stdio
+   * dispatch site (`src/mcp/server.ts`), never by the HTTP transports. `whoami`
+   * consults it to return the documented `{transport: 'local', scopes: []}`
+   * shape instead of the fail-closed `unknown_transport` throw — WITHOUT
+   * loosening `remote` (which stays true so file_upload confinement + the
+   * takes allow-list keep their tight boundary). The `!auth` throw still fires
+   * for any OTHER remote path, so a real HTTP-dropped-auth bug still trips.
+   */
+  localTransport?: boolean;
 }
 
 /**
@@ -2190,7 +2201,11 @@ const get_brain_identity: Operation = {
   description: 'Brain identity + counters for thin-client banner. Returns version, engine kind, and page/chunk counts. Read-scope.',
   params: {},
   handler: async (ctx) => {
-    const stats = await ctx.engine.getStats();
+    // #2430: scope the banner counters to the caller's source. get_brain_identity
+    // is read-scope, so a global getStats() count would leak the aggregate size
+    // of other sources to any authenticated read client. getScopedCounts routes
+    // through the same federated>scalar>unscoped ladder as every other read op.
+    const stats = await ctx.engine.getScopedCounts(sourceScopeOpts(ctx));
     // v0.42 self-upgrade: surface a pending update on the thin-client banner
     // (bonus channel; the CLI stderr marker + `gbrain self-upgrade` are the
     // load-bearing surface). Cache-read-only, no network, fail-open.
@@ -2571,7 +2586,11 @@ const resolve_slugs: Operation = {
     partial: { type: 'string', required: true },
   },
   handler: async (ctx, p) => {
-    return ctx.engine.resolveSlugs(p.partial as string);
+    // Source isolation (#2430): route through the same sourceScopeOpts ladder
+    // every other read op uses. Without it a scoped MCP caller could fuzzy-
+    // resolve slugs belonging to other sources — cross-tenant slug disclosure,
+    // even though get_page (which already threads scope) 404s the same slug.
+    return ctx.engine.resolveSlugs(p.partial as string, sourceScopeOpts(ctx));
   },
   scope: 'read',
 };
@@ -3649,7 +3668,11 @@ const whoami: Operation = {
     // where code conditionally trusted on `scopes.includes('admin')` instead
     // of `ctx.remote === false`. Empty scopes array forces clients to
     // special-case `transport: 'local'` explicitly.
-    if (ctx.remote === false) {
+    // #2430: the stdio MCP pipe is trusted-local but keeps remote=true (so
+    // file_upload confinement + the takes allow-list stay tight). It carries no
+    // per-token auth by design, so recognize it explicitly and return the local
+    // shape rather than the fail-closed throw. HTTP transports never set this.
+    if (ctx.remote === false || ctx.localTransport) {
       return { transport: 'local', scopes: [] };
     }
     if (!ctx.auth) {

@@ -1820,6 +1820,15 @@ export interface BrainEngine {
 
   // Stats + health
   getStats(): Promise<BrainStats>;
+  /**
+   * Source-scoped page/chunk counts (#2430). `get_brain_identity` is a
+   * read-scope op, so its banner counters must respect the caller's source
+   * scope — a global `getStats()` count leaks the aggregate size of other
+   * sources. Precedence mirrors sourceScopeOpts: `sourceIds[]` > `sourceId` >
+   * unscoped (both unset → whole brain, for trusted local callers). chunk_count
+   * joins content_chunks → pages (chunks carry no source_id of their own).
+   */
+  getScopedCounts(opts?: { sourceId?: string; sourceIds?: string[] }): Promise<{ page_count: number; chunk_count: number }>;
   getHealth(): Promise<BrainHealth>;
 
   // Ingest log
