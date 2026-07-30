@@ -4031,6 +4031,72 @@ const sources_add: Operation = {
   cliHints: { name: 'sources_add', hidden: true },
 };
 
+// PEU-492: source-scoped client provisioning over MCP. The web app (Vercel
+// serverless) can't shell the `gbrain` CLI, and the HTTP DCR / admin
+// register-client paths hardcode source_id='default'. This exposes the CLI's
+// source-scoped register-client as an `admin` MCP op so per-tenant provisioning
+// is a single authenticated HTTP call: ensure a NON-federated source exists
+// (isolation boundary), then mint a source-scoped read/write client_credentials
+// client. Returns the secret ONCE (it lives only in the result, never in a
+// logged param).
+const provision_source: Operation = {
+  name: 'provision_source',
+  description:
+    'Provision an isolated tenant brain: ensure a non-federated source exists, ' +
+    'then register a source-scoped read/write client_credentials OAuth client. ' +
+    'Returns { client_id, client_secret, source } (secret shown once). Admin only.',
+  params: {
+    source: {
+      type: 'string',
+      required: true,
+      description: 'Source id / slug ([a-z0-9-]{1,32}); unique per tenant.',
+    },
+    name: { type: 'string', description: 'Client + source display name (defaults to the source id).' },
+  },
+  mutating: true,
+  scope: 'admin',
+  handler: async (ctx, p) => {
+    const source = p.source as string;
+    const displayName = (p.name as string | undefined) ?? source;
+    const { addSource } = await import('./sources-ops.ts');
+    const { GBrainOAuthProvider } = await import('./oauth-provider.ts');
+    const { sqlQueryForEngine } = await import('./sql-query.ts');
+
+    // 1. Non-federated, Postgres-only source (the isolation boundary). No local
+    //    path: a SaaS tenant brain is stored in Postgres, not mirrored to a git
+    //    working tree, so put_page write-through reports no_repo_configured (a
+    //    no-op, not a lost write). Tolerate "already exists" — idempotent retry.
+    try {
+      await addSource(ctx.engine, {
+        id: source,
+        name: displayName,
+        localPath: null,
+        remoteUrl: undefined,
+        federated: false,
+        cloneDir: undefined,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/taken|already|exist/i.test(msg)) throw e;
+    }
+
+    // 2. Source-scoped read/write client (federated-read allowlist = its own
+    //    source only) — the exact semantics of the CLI register-client path.
+    const provider = new GBrainOAuthProvider({ sql: sqlQueryForEngine(ctx.engine) });
+    const { clientId, clientSecret } = await provider.registerClientManual(
+      displayName,
+      ['client_credentials'],
+      'read write',
+      [],
+      source,
+      [source],
+      'client_secret_post',
+    );
+    return { client_id: clientId, client_secret: clientSecret, source };
+  },
+  cliHints: { name: 'provision_source', hidden: true },
+};
+
 const sources_list: Operation = {
   name: 'sources_list',
   description:
@@ -5927,7 +5993,7 @@ export const operations: Operation[] = [
   // v0.30: calibration aggregates over takes
   takes_scorecard, takes_calibration,
   // v0.28: whoami + scoped sources management
-  whoami, sources_add, sources_list, sources_remove, sources_status,
+  whoami, sources_add, provision_source, sources_list, sources_remove, sources_status,
   // v0.29: Salience + anomalies + recent transcripts
   get_recent_salience, find_anomalies, get_recent_transcripts,
   // v0.42.x (#2390): Life Chronicle timeline reads
